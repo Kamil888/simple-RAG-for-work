@@ -243,14 +243,10 @@ if refresh_interval is not None:
     @st.fragment(run_every=refresh_interval)
     def _auto_refresh():
         results = refresh_all()
-        now = datetime.now().strftime("%H:%M:%S")
-        st.session_state.last_refresh = now
-        if results:
-            for lvl, msg in results:
-                icon = "✅" if lvl == "success" else ("⚠️" if lvl == "warning" else "❌")
-                st.toast(f"{icon} {msg}")
-            st.session_state.embed_log = results
-            st.rerun(scope="app")
+        st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
+        for lvl, msg in results:
+            icon = "✅" if lvl == "success" else ("⚠️" if lvl == "warning" else "❌")
+            st.toast(f"{icon} {msg}")
 
     _auto_refresh()
 
