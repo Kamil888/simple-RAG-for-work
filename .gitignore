@@ -1,5 +1,6 @@
 .env
 data/chroma_db/
+data/sources/
 __pycache__/
 *.pyc
 *.pyo
