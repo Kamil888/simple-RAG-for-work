@@ -3,7 +3,7 @@ import chromadb
 CHROMA_PATH = "./data/chroma_db"
 COLLECTION_NAME = "documents"
 
-_client: chromadb.PersistentClient | None = None
+_client = None
 _collection = None
 
 

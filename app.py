@@ -18,20 +18,44 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "llm_choice" not in st.session_state:
     st.session_state.llm_choice = "Claude"
+if "embed_log" not in st.session_state:
+    st.session_state.embed_log = []  # list of (level, message) persisted across reruns
+
+
+def test_claude_connection() -> tuple[bool, str]:
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+        return True, "Connected"
+    except Exception as e:
+        return False, str(e)
+
+
+def test_openai_connection() -> tuple[bool, str]:
+    try:
+        import openai
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client.models.list()
+        return True, "Connected"
+    except Exception as e:
+        return False, str(e)
 
 
 def get_llm():
     choice = st.session_state.llm_choice
     if choice == "Claude":
-        key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not key:
-            st.error("ANTHROPIC_API_KEY is not set. Add it to your .env file or Streamlit secrets.")
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            st.error("ANTHROPIC_API_KEY is not configured. See sidebar for instructions.")
             st.stop()
         return ClaudeLLM()
     else:
-        key = os.getenv("OPENAI_API_KEY", "")
-        if not key:
-            st.error("OPENAI_API_KEY is not set. Add it to your .env file or Streamlit secrets.")
+        if not os.getenv("OPENAI_API_KEY"):
+            st.error("OPENAI_API_KEY is not configured. See sidebar for instructions.")
             st.stop()
         return OpenAILLM()
 
@@ -43,11 +67,16 @@ def format_source(src: dict) -> str:
     return f"**{name}** — page {src.get('page', '?')}"
 
 
+def key_status(env_var: str) -> str:
+    return "✅ Configured" if os.getenv(env_var) else "❌ Not set"
+
+
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📄 RAG for Work")
     st.divider()
 
+    # ── LLM selector ──
     st.subheader("LLM")
     llm_choice = st.radio(
         "Select model",
@@ -57,7 +86,35 @@ with st.sidebar:
     )
     st.session_state.llm_choice = llm_choice
 
+    # ── API key status ──
+    if llm_choice == "Claude":
+        st.caption(f"Anthropic API key: {key_status('ANTHROPIC_API_KEY')}")
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            st.info("Add `ANTHROPIC_API_KEY=sk-ant-...` to the `.env` file in the project folder, then restart the app.")
+        else:
+            if st.button("Test connection", key="test_claude"):
+                with st.spinner("Testing…"):
+                    ok, msg = test_claude_connection()
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+    else:
+        st.caption(f"OpenAI API key: {key_status('OPENAI_API_KEY')}")
+        if not os.getenv("OPENAI_API_KEY"):
+            st.info("Add `OPENAI_API_KEY=sk-...` to the `.env` file in the project folder, then restart the app.")
+        else:
+            if st.button("Test connection", key="test_openai"):
+                with st.spinner("Testing…"):
+                    ok, msg = test_openai_connection()
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
     st.divider()
+
+    # ── Document upload ──
     st.subheader("Documents")
     uploaded_files = st.file_uploader(
         "Upload documents",
@@ -67,23 +124,36 @@ with st.sidebar:
     )
 
     if st.button("Embed Documents", type="primary", disabled=not uploaded_files):
+        st.session_state.embed_log = []
         progress = st.progress(0, text="Processing...")
         for i, f in enumerate(uploaded_files):
-            progress.progress((i) / len(uploaded_files), text=f"Parsing {f.name}...")
+            progress.progress(i / len(uploaded_files), text=f"Parsing {f.name}...")
             try:
-                chunks = load_and_chunk(f.read(), f.name)
+                file_bytes = f.read()
+                chunks = load_and_chunk(file_bytes, f.name)
                 if not chunks:
-                    st.warning(f"No text extracted from {f.name}.")
+                    st.session_state.embed_log.append(("warning", f"{f.name}: no text could be extracted (scanned/image file?)."))
                     continue
                 progress.progress((i + 0.5) / len(uploaded_files), text=f"Embedding {f.name}...")
                 embeddings = embed_texts([c["text"] for c in chunks])
                 add_document(chunks, embeddings, f.name)
+                st.session_state.embed_log.append(("success", f"{f.name}: {len(chunks)} chunks indexed."))
             except Exception as e:
-                st.error(f"Failed to process {f.name}: {e}")
+                st.session_state.embed_log.append(("error", f"{f.name}: {e}"))
         progress.progress(1.0, text="Done!")
         st.rerun()
 
+    for level, msg in st.session_state.embed_log:
+        if level == "success":
+            st.success(msg)
+        elif level == "warning":
+            st.warning(msg)
+        else:
+            st.error(msg)
+
     st.divider()
+
+    # ── Indexed files ──
     st.subheader("Indexed files")
     indexed = list_indexed_files()
     if indexed:

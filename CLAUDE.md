@@ -11,7 +11,7 @@ python -m venv .venv
 source .venv/Scripts/activate   # Windows bash; or .venv\Scripts\activate.bat in CMD
 pip install -r requirements.txt
 cp .env.example .env            # fill in ANTHROPIC_API_KEY and/or OPENAI_API_KEY
-streamlit run app.py
+python -m streamlit run app.py  # use python -m, not bare 'streamlit', on Windows
 ```
 
 ## Running Tests
@@ -33,7 +33,7 @@ app.py                   ← Streamlit UI (sidebar upload + chat main area)
 rag/
   ingestion/
     loader.py            ← dispatch by file extension → list of chunk dicts
-    pdf_parser.py        ← pypdf, metadata: {source, page, chunk_index}
+    pdf_parser.py        ← pypdf + io.BytesIO, metadata: {source, page, chunk_index}
     docx_parser.py       ← python-docx, estimated page by cumulative char count
     pptx_parser.py       ← python-pptx, metadata: {source, slide, chunk_index}
   embedder.py            ← sentence-transformers all-MiniLM-L6-v2, loaded once via lru_cache
@@ -54,3 +54,6 @@ data/chroma_db/          ← gitignored; persistent embeddings
 - **PPTX chunks** use `"slide"` key in metadata; PDF/DOCX use `"page"`. `pipeline.py` and `app.py` handle both.
 - **Embedding model** (`all-MiniLM-L6-v2`) runs locally — no API key, no cost per query.
 - **LLM is abstracted** behind `BaseLLM` so adding a new provider means creating one file in `rag/llm/`.
+- **API keys are never accepted via the UI** — only read from `.env` (local) or Streamlit Secrets (cloud). The sidebar shows key status (set/not set) and a test-connection button only.
+- **`chromadb.PersistentClient` is a function, not a class** — do not use it in type annotations with `|` syntax (causes runtime error on module-level variable declarations).
+- **Embed results** are stored in `st.session_state.embed_log` as `(level, message)` tuples so they survive `st.rerun()` and are visible to the user after the page refreshes.

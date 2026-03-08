@@ -1,3 +1,4 @@
+import io
 from pypdf import PdfReader
 
 CHUNK_SIZE = 2000
@@ -15,7 +16,7 @@ def _split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OV
 
 
 def parse_pdf(file_bytes: bytes, filename: str) -> list[dict]:
-    reader = PdfReader(file_bytes)
+    reader = PdfReader(io.BytesIO(file_bytes))
     chunks = []
     chunk_index = 0
     for page_num, page in enumerate(reader.pages, start=1):
