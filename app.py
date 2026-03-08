@@ -1,5 +1,5 @@
+import json
 import os
-import shutil
 from datetime import datetime
 
 import streamlit as st
@@ -16,8 +16,9 @@ from rag.llm.openai_llm import OpenAILLM
 
 st.set_page_config(page_title="RAG for Work", page_icon="📄", layout="wide")
 
-SOURCES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sources")
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx"}
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+PATHS_FILE = os.path.join(DATA_DIR, ".paths.json")      # {filename: full_path}
+MTIME_FILE = os.path.join(DATA_DIR, ".mtime_index.json") # {full_path: mtime}
 
 REFRESH_OPTIONS = {
     "Off":           None,
@@ -31,61 +32,67 @@ REFRESH_OPTIONS = {
     "Every week":    604800,
 }
 
-# ── Session state ────────────────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "llm_choice" not in st.session_state:
-    st.session_state.llm_choice = "Claude"
-if "embed_log" not in st.session_state:
-    st.session_state.embed_log = []
-if "refresh_label" not in st.session_state:
-    st.session_state.refresh_label = "Off"
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = None
 
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-def save_source(filename: str, data: bytes):
-    os.makedirs(SOURCES_DIR, exist_ok=True)
-    with open(os.path.join(SOURCES_DIR, filename), "wb") as f:
-        f.write(data)
-
-
-def delete_source(filename: str):
-    path = os.path.join(SOURCES_DIR, filename)
+# ── Persistence ──────────────────────────────────────────────────────────────
+def _load(path: str) -> dict:
     if os.path.exists(path):
-        os.remove(path)
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
 
-def embed_file(filename: str, file_bytes: bytes) -> tuple[str, str]:
-    """Chunk, embed, and index a file. Returns (level, message)."""
+def _save(path: str, data: dict):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+# ── Core embed / refresh logic ───────────────────────────────────────────────
+def embed_from_path(filepath: str) -> tuple[str, str]:
+    """Read file from disk, chunk, embed, and store. Returns (level, message)."""
+    filename = os.path.basename(filepath)
+    with open(filepath, "rb") as f:
+        file_bytes = f.read()
     chunks = load_and_chunk(file_bytes, filename)
     if not chunks:
-        return "warning", f"{filename}: no text extracted (scanned/image file?)."
+        return "warning", f"{filename}: no text could be extracted (scanned/image?)."
     embeddings = embed_texts([c["text"] for c in chunks])
     add_document(chunks, embeddings, filename)
     return "success", f"{filename}: {len(chunks)} chunks indexed."
 
 
-def refresh_all() -> list[tuple[str, str]]:
-    """Re-embed every file saved in SOURCES_DIR. Returns (level, message) list."""
+def refresh_changed(force: bool = False) -> list[tuple[str, str]]:
+    """
+    Re-embed files whose mtime changed since last embed.
+    If force=True, re-embed all regardless of mtime (used by Refresh Now).
+    """
+    paths = _load(PATHS_FILE)   # {filename: full_path}
+    mtimes = _load(MTIME_FILE)  # {full_path: last_embedded_mtime}
     results = []
-    if not os.path.exists(SOURCES_DIR):
-        return results
-    for filename in sorted(os.listdir(SOURCES_DIR)):
-        if os.path.splitext(filename)[1].lower() not in SUPPORTED_EXTENSIONS:
+
+    for filename, filepath in paths.items():
+        if not os.path.exists(filepath):
+            results.append(("error", f"{filename}: original file not found at {filepath}"))
             continue
-        path = os.path.join(SOURCES_DIR, filename)
+        current_mtime = os.path.getmtime(filepath)
+        if not force and current_mtime <= mtimes.get(filepath, 0):
+            continue  # unchanged — skip
         try:
-            with open(path, "rb") as f:
-                file_bytes = f.read()
-            level, msg = embed_file(filename, file_bytes)
+            level, msg = embed_from_path(filepath)
+            if level == "success":
+                mtimes[filepath] = current_mtime
+                _save(MTIME_FILE, mtimes)
             results.append((level, msg))
         except Exception as e:
             results.append(("error", f"{filename}: {e}"))
+
     return results
 
 
+# ── LLM helpers ──────────────────────────────────────────────────────────────
 def test_claude() -> tuple[bool, str]:
     try:
         import anthropic
@@ -134,6 +141,19 @@ def show_log():
         {"success": st.success, "warning": st.warning, "info": st.info}.get(level, st.error)(msg)
 
 
+# ── Session state ────────────────────────────────────────────────────────────
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "llm_choice" not in st.session_state:
+    st.session_state.llm_choice = "Claude"
+if "embed_log" not in st.session_state:
+    st.session_state.embed_log = []
+if "refresh_label" not in st.session_state:
+    st.session_state.refresh_label = "Off"
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = None
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📄 RAG for Work")
@@ -169,25 +189,35 @@ with st.sidebar:
 
     # Documents
     st.subheader("Documents")
-    uploaded_files = st.file_uploader(
-        "Upload", type=["pdf", "docx", "pptx"],
-        accept_multiple_files=True, label_visibility="collapsed",
+    st.caption("Paste the full path to a file on your computer.")
+    new_path = st.text_input(
+        "File path",
+        placeholder=r"e.g. C:\Users\You\Documents\report.docx",
+        label_visibility="collapsed",
     )
 
-    if st.button("Embed Documents", type="primary", disabled=not uploaded_files):
+    if st.button("Add & Index", type="primary", disabled=not new_path.strip()):
+        filepath = new_path.strip()
+        filename = os.path.basename(filepath)
         st.session_state.embed_log = []
-        progress = st.progress(0, text="Processing…")
-        for i, f in enumerate(uploaded_files):
-            progress.progress(i / len(uploaded_files), text=f"Processing {f.name}…")
-            try:
-                file_bytes = f.read()
-                level, msg = embed_file(f.name, file_bytes)
-                if level == "success":
-                    save_source(f.name, file_bytes)
-                st.session_state.embed_log.append((level, msg))
-            except Exception as e:
-                st.session_state.embed_log.append(("error", f"{f.name}: {e}"))
-        progress.progress(1.0, text="Done!")
+        if not os.path.exists(filepath):
+            st.session_state.embed_log = [("error", f"File not found: {filepath}")]
+        elif os.path.splitext(filename)[1].lower() not in {".pdf", ".docx", ".pptx"}:
+            st.session_state.embed_log = [("error", "Unsupported file type. Use PDF, DOCX, or PPTX.")]
+        else:
+            with st.spinner(f"Indexing {filename}…"):
+                try:
+                    level, msg = embed_from_path(filepath)
+                    if level == "success":
+                        paths = _load(PATHS_FILE)
+                        paths[filename] = filepath
+                        _save(PATHS_FILE, paths)
+                        mtimes = _load(MTIME_FILE)
+                        mtimes[filepath] = os.path.getmtime(filepath)
+                        _save(MTIME_FILE, mtimes)
+                    st.session_state.embed_log = [(level, msg)]
+                except Exception as e:
+                    st.session_state.embed_log = [("error", f"{filename}: {e}")]
         st.rerun()
 
     show_log()
@@ -197,7 +227,8 @@ with st.sidebar:
     # Auto-refresh
     st.subheader("Auto-refresh")
     refresh_label = st.selectbox(
-        "Interval", options=list(REFRESH_OPTIONS.keys()),
+        "Interval",
+        options=list(REFRESH_OPTIONS.keys()),
         index=list(REFRESH_OPTIONS.keys()).index(st.session_state.refresh_label),
         label_visibility="collapsed",
     )
@@ -205,8 +236,8 @@ with st.sidebar:
 
     if st.button("Refresh Now"):
         with st.spinner("Re-embedding all documents…"):
-            results = refresh_all()
-        st.session_state.embed_log = results if results else [("info", "No documents to refresh.")]
+            results = refresh_changed(force=True)
+        st.session_state.embed_log = results if results else [("info", "No documents indexed yet.")]
         st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
         st.rerun()
 
@@ -218,13 +249,15 @@ with st.sidebar:
     # Indexed files
     st.subheader("Indexed files")
     indexed = list_indexed_files()
+    paths = _load(PATHS_FILE)
     if indexed:
         for fname, count in sorted(indexed.items()):
             c1, c2 = st.columns([3, 1])
             c1.caption(f"📎 {fname} ({count} chunks)")
             if c2.button("✕", key=f"del_{fname}", help=f"Remove {fname}"):
                 remove_document(fname)
-                delete_source(fname)
+                paths.pop(fname, None)
+                _save(PATHS_FILE, paths)
                 st.rerun()
     else:
         st.caption("No documents indexed yet.")
@@ -232,8 +265,8 @@ with st.sidebar:
     st.divider()
     if st.button("Clear All", type="secondary"):
         clear_all()
-        if os.path.exists(SOURCES_DIR):
-            shutil.rmtree(SOURCES_DIR)
+        _save(PATHS_FILE, {})
+        _save(MTIME_FILE, {})
         st.rerun()
 
 
@@ -242,7 +275,7 @@ refresh_interval = REFRESH_OPTIONS[st.session_state.refresh_label]
 if refresh_interval is not None:
     @st.fragment(run_every=refresh_interval)
     def _auto_refresh():
-        results = refresh_all()
+        results = refresh_changed(force=False)  # only re-embed if file changed on disk
         st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
         for lvl, msg in results:
             icon = "✅" if lvl == "success" else ("⚠️" if lvl == "warning" else "❌")
