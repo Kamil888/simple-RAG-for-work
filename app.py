@@ -219,7 +219,7 @@ with st.sidebar:
     )
 
     if st.button("Add & Index", type="primary", disabled=not new_path.strip()):
-        filepath = new_path.strip()
+        filepath = new_path.strip().strip("\"'")
         filename = os.path.basename(filepath)
         st.session_state.embed_log = []
         if not os.path.exists(filepath):
