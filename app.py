@@ -152,6 +152,8 @@ if "refresh_label" not in st.session_state:
     st.session_state.refresh_label = "Off"
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = None
+if "_last_auto_refresh_ts" not in st.session_state:
+    st.session_state._last_auto_refresh_ts = datetime.now().timestamp()
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -271,17 +273,24 @@ with st.sidebar:
 
 
 # ── Auto-refresh fragment ────────────────────────────────────────────────────
-refresh_interval = REFRESH_OPTIONS[st.session_state.refresh_label]
-if refresh_interval is not None:
-    @st.fragment(run_every=refresh_interval)
-    def _auto_refresh():
-        results = refresh_changed(force=False)  # only re-embed if file changed on disk
-        st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
-        for lvl, msg in results:
-            icon = "✅" if lvl == "success" else ("⚠️" if lvl == "warning" else "❌")
-            st.toast(f"{icon} {msg}")
+# Poll every 60 s. Manual timestamp check enforces the user-selected interval
+# so that full-page reruns (triggered by user interactions) don't reset the clock.
+@st.fragment(run_every=60)
+def _auto_refresh():
+    interval = REFRESH_OPTIONS[st.session_state.refresh_label]
+    if interval is None:
+        return
+    now = datetime.now().timestamp()
+    if now - st.session_state._last_auto_refresh_ts < interval:
+        return
+    results = refresh_changed(force=False)
+    st.session_state._last_auto_refresh_ts = now
+    st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
+    for lvl, msg in results:
+        icon = "✅" if lvl == "success" else ("⚠️" if lvl == "warning" else "❌")
+        st.toast(f"{icon} {msg}")
 
-    _auto_refresh()
+_auto_refresh()
 
 
 # ── Chat ─────────────────────────────────────────────────────────────────────
